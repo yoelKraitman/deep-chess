@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Chess Analyzer</title>
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #f0f2f5; display: flex; justify-content: center; padding-top: 20px; }
+        .app-container { text-align: center; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); width: 450px; }
+        
+        #myBoard { width: 400px; margin: 15px auto; position: relative; } 
+        
+        #status { font-weight: bold; margin-bottom: 10px; font-size: 18px; color: #333;}
+        .controls { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-top: 15px; border: 1px solid #ddd; }
+        textarea { width: 90%; height: 60px; margin-bottom: 10px; padding: 5px; font-family: monospace; direction: ltr; }
+        .btn { padding: 8px 15px; margin: 5px; cursor: pointer; border: none; border-radius: 5px; background: #1976d2; color: white; font-weight: bold; font-size: 14px; }
+        .btn:hover { background: #1565c0; }
+        .btn-nav { background: #4caf50; }
+        .btn-nav:hover { background: #388e3c; }
+        .ai-box { background-color: #e3f2fd; border-right: 5px solid #1976d2; padding: 15px; text-align: right; border-radius: 5px; margin-top: 15px; min-height: 80px;}
+        .ai-box h3 { margin-top: 0; color: #1976d2; font-size: 16px;}
+        #ai-explanation { margin: 0; font-size: 15px; color: #333; line-height: 1.5; }
+        
+        .highlight-best { box-shadow: inset 0 0 3px 4px rgba(76, 175, 80, 0.7) !important; }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <h1>המאמן האישי שלך ♟️</h1>
+        <div id="status">תור הלבן לשחק</div>
+        <div id="myBoard"></div>
+        
+        <div class="ai-box">
+            <h3>ניתוח ה-AI 🧠</h3>
+            <p id="ai-explanation">הזז כלי על הלוח או טען משחק כדי לקבל ניתוח...</p>
+        </div>
+
+        <div class="controls">
+            <textarea id="pgn-input" placeholder="הדבק כאן משחק (PGN)..."></textarea><br>
+            <button class="btn" onclick="loadPGN()">טען משחק</button>
+            <hr style="border-top: 1px solid #ddd; margin: 15px 0;">
+            <button class="btn btn-nav" onclick="prevMove()">⬅️ הקודם</button>
+            <button class="btn btn-nav" onclick="nextMove()">הבא ➡️</button>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    
+    <script>
+        var board = null;
+        var game = new Chess();
+        var $status = $('#status');
+        var $aiText = $('#ai-explanation');
+        var moveHistory = [];
+        var currentMoveIndex = -1;
+
+        var config = { 
+            pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+            draggable: true, position: 'start', onDragStart: onDragStart, onDrop: onDrop, onSnapEnd: onSnapEnd 
+        };
+        board = Chessboard('myBoard', config);
+        
+        // ==========================================
+        // מערכת החצים - משתמשת ב-Capture Phase
+        // ==========================================
+        
+        $('#myBoard').append(`
+            <svg id="svg-arrows" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:100;">
+                <defs>
+                    <marker id="arrowhead-green" markerWidth="3" markerHeight="3" refX="2" refY="1.5" orient="auto">
+                        <polygon points="0 0, 3 1.5, 0 3" fill="rgba(76, 175, 80, 0.85)" />
+                    </marker>
+                    <marker id="arrowhead-orange" markerWidth="3" markerHeight="3" refX="2" refY="1.5" orient="auto">
+                        <polygon points="0 0, 3 1.5, 0 3" fill="rgba(255, 152, 0, 0.85)" />
+                    </marker>
+                </defs>
+                <g id="ai-arrow-group"></g>
+                <g id="custom-arrow-group"></g>
+            </svg>
+        `);
+
+        function getSqCoords(sq) {
+            var sqSize = $('#myBoard').width() / 8;
+            var file = "abcdefgh".indexOf(sq[0]);
+            var rank = 8 - parseInt(sq[1]);
+            return { x: file * sqSize + sqSize / 2, y: rank * sqSize + sqSize / 2, size: sqSize };
+        }
+
+        function drawArrow(fromSq, toSq, type) {
+            var start = getSqCoords(fromSq);
+            var end = getSqCoords(toSq);
+            
+            var dx = end.x - start.x;
+            var dy = end.y - start.y;
+            var angle = Math.atan2(dy, dx);
+            var targetRadius = start.size * 0.4; 
+            var endX = end.x - targetRadius * Math.cos(angle);
+            var endY = end.y - targetRadius * Math.sin(angle);
+
+            var isAI = (type === 'ai');
+            var color = isAI ? "rgba(76, 175, 80, 0.85)" : "rgba(255, 152, 0, 0.85)";
+            var marker = isAI ? "url(#arrowhead-green)" : "url(#arrowhead-orange)";
+            
+            var lineHTML = `<line x1="${start.x}" y1="${start.y}" x2="${endX}" y2="${endY}" stroke="${color}" stroke-width="${start.size/6}" marker-end="${marker}" stroke-linecap="round"/>`;
+            
+            if (isAI) $('#ai-arrow-group').html(lineHTML);
+            else $('#custom-arrow-group').append(lineHTML);
+        }
+
+        function highlightBestMove(bestMoveUci) {
+            if (!bestMoveUci || bestMoveUci === "N/A" || bestMoveUci.length < 4) return;
+            var fromSquare = bestMoveUci.substring(0, 2);
+            var toSquare = bestMoveUci.substring(2, 4);
+            $('.square-' + fromSquare).addClass('highlight-best');
+            $('.square-' + toSquare).addClass('highlight-best');
+            drawArrow(fromSquare, toSquare, 'ai');
+        }
+
+        function removeHighlights() {
+            $('#myBoard .square-55d63').removeClass('highlight-best');
+            $('#ai-arrow-group').empty();
+            $('#custom-arrow-group').empty();
+        }
+
+        // --- הנדסת קליק ימני (אגרסיבית ובטוחה) ---
+        var boardEl = document.getElementById('myBoard');
+        var rightClickStartSq = null;
+
+        function getSquareFromMouse(e) {
+            var rect = boardEl.getBoundingClientRect();
+            var x = e.clientX - rect.left;
+            var y = e.clientY - rect.top;
+            
+            if (x < 0 || x >= rect.width || y < 0 || y >= rect.height) return null;
+            
+            var sqSize = rect.width / 8;
+            var fileIdx = Math.floor(x / sqSize);
+            var rankIdx = 7 - Math.floor(y / sqSize);
+            var files = "abcdefgh";
+            return files[fileIdx] + (rankIdx + 1);
+        }
+
+        // ביטול תפריט דפדפן (עם true כדי לתפוס את זה ראשונים)
+        boardEl.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+        }, true);
+
+        // תפיסת לחיצת עכבר - עם true כדי לעצור את הספרייה מלהתערב
+        boardEl.addEventListener('mousedown', function(e) {
+            if (e.button === 2) { // קליק ימני
+                e.stopPropagation(); // עוצר את הספרייה מלקרוא את הלחיצה!
+                e.preventDefault();
+                rightClickStartSq = getSquareFromMouse(e);
+            } else if (e.button === 0) { // קליק שמאלי
+                $('#custom-arrow-group').empty(); // רק מנקה את החצים הכתומים ונותן לספרייה להמשיך רגיל
+            }
+        }, true);
+
+        // תפיסת שחרור עכבר
+        boardEl.addEventListener('mouseup', function(e) {
+            if (e.button === 2) { // שחרור קליק ימני
+                e.stopPropagation();
+                e.preventDefault();
+                if (rightClickStartSq) {
+                    var rightClickEndSq = getSquareFromMouse(e);
+                    if (rightClickEndSq && rightClickStartSq !== rightClickEndSq) {
+                        drawArrow(rightClickStartSq, rightClickEndSq, 'custom');
+                    }
+                }
+                rightClickStartSq = null;
+            }
+        }, true);
+        // ==========================================
+
+
+        // --- פונקציות תקשורת רגילות ---
+        function analyzeFromServer(fen_before, move_uci) {
+            $aiText.html('<i>ה-AI מנתח את המהלך... 🤖</i>');
+            removeHighlights();
+            fetch('/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fen: fen_before, move: move_uci })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) { $aiText.html('<span style="color:red;">שגיאה: ' + data.error + '</span>'); } 
+                else {
+                    $aiText.html(data.explanation);
+                    if (data.best_move) highlightBestMove(data.best_move);
+                }
+            })
+            .catch(e => $aiText.html('<span style="color:red;">שגיאה בתקשורת עם השרת.</span>'));
+        }
+
+        function loadPGN() {
+            var pgn = $('#pgn-input').val();
+            game.reset(); removeHighlights();
+            if (game.load_pgn(pgn)) {
+                moveHistory = game.history({ verbose: true });
+                game.reset(); currentMoveIndex = -1;
+                board.position(game.fen()); updateStatus();
+                $aiText.html('<b>✅ משחק נטען בהצלחה!</b><br>לחץ על כפתור "הבא" כדי לנתח.');
+            } else { alert("קוד ה-PGN שהזנת אינו תקין."); }
+        }
+
+        function nextMove() {
+            if (currentMoveIndex < moveHistory.length - 1) {
+                var fen_before = game.fen();
+                currentMoveIndex++;
+                var move = moveHistory[currentMoveIndex];
+                game.move(move.san); board.position(game.fen()); updateStatus();
+                analyzeFromServer(fen_before, move.from + move.to + (move.promotion ? move.promotion : ''));
+            } else { $aiText.html('הגעת לסוף המשחק!'); }
+        }
+
+        function prevMove() {
+            if (currentMoveIndex >= 0) {
+                game.undo(); currentMoveIndex--;
+                board.position(game.fen()); updateStatus(); removeHighlights();
+                $aiText.html('<i>חזרנו מהלך אחורה...</i>');
+            }
+        }
+
+        function onDragStart (source, piece) {
+            if (game.game_over() || (game.turn() === 'w' && piece.search(/^b/) !== -1) || (game.turn() === 'b' && piece.search(/^w/) !== -1)) return false;
+        }
+
+        function onDrop (source, target) {
+            var fen_before = game.fen();
+            var move_obj = game.move({ from: source, to: target, promotion: 'q' });
+            if (move_obj === null) return 'snapback';
+            moveHistory = game.history({verbose: true}); currentMoveIndex = moveHistory.length - 1;
+            updateStatus(); analyzeFromServer(fen_before, source + target + (move_obj.promotion ? move_obj.promotion : ''));
+        }
+
+        function onSnapEnd () { board.position(game.fen()); }
+
+        function updateStatus () {
+            var statusHTML = ''; var moveColor = (game.turn() === 'w') ? 'לבן' : 'שחור';
+            if (game.in_checkmate()) { statusHTML = 'שח-מט! ' + moveColor + ' הפסיד.'; } 
+            else if (game.in_draw()) { statusHTML = 'תיקו'; } 
+            else { statusHTML = 'תור ה' + moveColor; if (game.in_check()) { statusHTML += ', שח!'; } }
+            $status.html(statusHTML);
+        }
+
+        updateStatus();
+    </script>
+</body>
+</html>
