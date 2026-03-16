@@ -1,22 +1,24 @@
 import os
+from dotenv import load_dotenv
 import chess
 import chess.engine
 from flask import Flask, request, jsonify, render_template
 from groq import Groq
 
+# טעינת משתנים
+load_dotenv()
 app = Flask(__name__)
 
-# --- הגדרות ---
+# --- נתיב למנוע ה-Stockfish שלך ---
 STOCKFISH_PATH = r"C:\Users\Yoel kraitman\Desktop\projects\Chess_AI_Project\engine\stockfish.exe"
-GROQ_API_KEY = "KEY" # <--- שים את המפתח שלך כאן!
+
+# הגדרות API של Groq
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 
 PIECE_NAMES = {
     chess.PAWN: "רגלי", chess.KNIGHT: "סוס", chess.BISHOP: "רץ",
     chess.ROOK: "צריח", chess.QUEEN: "מלכה", chess.KING: "מלך"
-}
-COLOR_NAMES = {
-    chess.WHITE: "לבן", chess.BLACK: "שחור"
 }
 
 @app.route('/')
@@ -28,80 +30,72 @@ def analyze_move():
     data = request.json
     fen_before = data.get('fen')
     move_uci = data.get('move')
+    history = data.get('history', 'תחילת משחק')
 
     board = chess.Board(fen_before)
     move = chess.Move.from_uci(move_uci)
     
-    # 1. תרגום המהלך של השחקן לעברית
+    # תרגום המהלך של השחקן
     moving_piece = board.piece_at(move.from_square)
     piece_name = PIECE_NAMES.get(moving_piece.piece_type, "כלי")
-    piece_color = COLOR_NAMES.get(moving_piece.color, "")
-    
-    is_capture = board.is_capture(move)
-    captured_piece = board.piece_at(move.to_square) if is_capture and not board.is_en_passant(move) else None
-    
-    action_str = f"הזזתי {piece_name} {piece_color} מ-{chess.square_name(move.from_square)} ל-{chess.square_name(move.to_square)}."
-    if is_capture:
-        if captured_piece:
-            cap_name = PIECE_NAMES.get(captured_piece.piece_type, "כלי")
-            cap_color = COLOR_NAMES.get(captured_piece.color, "")
-            action_str += f" באותו מהלך אכלתי {cap_name} {cap_color} של היריב!"
-        else:
-            action_str += " באותו מהלך אכלתי דרך הילוכו!"
+    action_str = f"{piece_name} ל-{chess.square_name(move.to_square)}"
             
     try:
         with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
-            # מנתחים את העמדה לפני שהשחקן עשה את המהלך
+            # מה Stockfish חושב שהיה צריך לעשות?
             info_before = engine.analyse(board, chess.engine.Limit(time=0.5))
             best_move_uci = str(info_before.get("pv")[0]) if info_before.get("pv") else "N/A"
             
-            # 2. תרגום המהלך של *המנוע* לעברית!
             best_action_str = "לא ידוע"
             if best_move_uci != "N/A":
                 best_move_obj = chess.Move.from_uci(best_move_uci)
                 best_engine_piece = board.piece_at(best_move_obj.from_square)
-                if best_engine_piece:
-                    engine_piece_name = PIECE_NAMES.get(best_engine_piece.piece_type, "כלי")
-                    best_action_str = f"{engine_piece_name} ל-{chess.square_name(best_move_obj.to_square)}"
-                else:
-                    best_action_str = best_move_uci
+                engine_piece_name = PIECE_NAMES.get(best_engine_piece.piece_type, "כלי") if best_engine_piece else ""
+                best_action_str = f"{engine_piece_name} ל-{chess.square_name(best_move_obj.to_square)}"
 
-            # מעדכנים את הלוח עם המהלך של השחקן כדי לקבל את הציון החדש
+            # מבצעים את המהלך כדי לבדוק את הציון עכשיו
             board.push(move)
             info_after = engine.analyse(board, chess.engine.Limit(time=0.5))
-            
             score_pov = info_after["score"].white()
-            if score_pov.is_mate():
-                score_str = f"Mate in {score_pov.mate()}"
-            else:
-                score_str = f"{score_pov.score() / 100.0:+.2f}"
+            score_str = f"Mate in {score_pov.mate()}" if score_pov.is_mate() else f"{score_pov.score() / 100.0:+.2f}"
 
     except Exception as e:
         return jsonify({"error": f"Stockfish Error: {str(e)}"}), 500
 
-    # 3. הפרומפט החדש והקשוח - מחייב הסבר אמיתי!
+    # הפרומפט שבונה את התשובה המושלמת שרצית
     prompt = f"""
-    אתה מאמן שחמט בכיר שמנתח משחק של תלמיד. 
-    
-    חוקים נוקשים לתשובה שלך:
-    1. **אסור** לך להשתמש במילים "המנוע המליץ", "לפי Stockfish", או "הציון הוא". אל תדבר על מספרים.
-    2. אתה חייב להסביר את ה*למה* (שליטה במרכז, פיתוח כלים, חולשות, איומים טקטיים, בטיחות המלך).
-    3. תסביר מדוע המהלך החלופי עדיף רעיונית. המטרה היא לבנות הבנה, לא לשנן מהלכים.
+    אתה מאמן שחמט רב-אמן. המטרה שלך היא ללמד אסטרטגיה עמוקה, במיוחד בפתיחות.
     
     נתונים:
-    מצב הלוח: {board.fen()}
-    המהלך שהתלמיד ביצע כרגע: {action_str}
-    המהלך הנכון שהיה עליו לבצע במקום זאת: {best_action_str}
+    היסטוריית המשחק עד כה: {history}
+    המהלך שבוצע הרגע: {action_str} ({move_uci})
+    המלצת המנוע (אם בוצעה טעות): {best_action_str}
+    ציון העמדה הנוכחי: {score_str}
     
-    כתוב פסקת הסבר אחת, חדה וברורה בעברית, שנותנת לתלמיד תובנה אמיתית על העמדה ועל ההבדל בין המהלכים.
+    ענה בעברית בלבד, בפורמט HTML בדיוק לפי המבנה הבא. אל תוסיף הקדמות או סיכומי ביניים:
+    
+    <p><b>🎯 הלוגיקה העמוקה (ה"למה"):</b> הסבר בפירוט את הרעיון האסטרטגי. למה המהלך הזה שוחק דווקא עכשיו? מה הוא משיג (שליטה במרכז, לחץ, פינוי ערוגה)? אם זו טעות, הסבר מה הכשל הלוגי.</p>
+    <p><b>💡 כלל ברזל לזיכרון:</b> תן טיפ קליט, משפט מפתח או עיקרון שחמטאי שיעזור לתלמיד לזהות את המצב הזה בעתיד (לדוגמה: "כשהיריב מוציא מלכה מוקדם, נפתח כלים תוך כדי תקיפתה").</p>
+    <p><b>⚔️ איך להעניש:</b> בהנחה שהיריב יטעה או ישחק מהלך פסיבי עכשיו, איך ננצל את זה? מה התוכנית ההתקפית או הרצף הטקטי שצריך לחפש במהלך הבא?</p>
+    
+    חוקים נוקשים: אל תזכיר את המילה "מנוע" או מספרים סטטיסטיים. אל תמציא שמות של משבצות שלא קיימות (רק a1 עד h8).
     """
 
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile",
+            temperature=0.3
         )
-        explanation = chat_completion.choices[0].message.content
+        # שולחים רק את התוכן חזרה לדפדפן
+        explanation = chat_completion.choices[0].message.content.strip()
+        
+        # מנקה פורמט Markdown במידה וה-AI מתעקש להוסיף אותו
+        if explanation.startswith("```html"):
+            explanation = explanation[7:]
+        if explanation.endswith("```"):
+            explanation = explanation[:-3]
+            
         return jsonify({"explanation": explanation, "best_move": best_move_uci})
     except Exception as e:
         return jsonify({"error": f"AI Error: {str(e)}"}), 500

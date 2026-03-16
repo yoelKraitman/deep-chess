@@ -1,12 +1,17 @@
 import os
+from dotenv import load_dotenv # שורה חדשה
 import chess
 import chess.engine
 from groq import Groq
 
+# טעינת המשתנים מקובץ ה-.env
+load_dotenv()
+
 # --- 1. SETTINGS ---
 STOCKFISH_PATH = r"C:\Users\Yoel kraitman\Desktop\projects\Chess_AI_Project\engine\stockfish.exe"
-# Security Note: It is recommended to keep your API key in an environment variable later on.
-GROQ_API_KEY = "KEY" 
+
+# משיכת המפתח מהסביבה במקום לכתוב אותו כאן
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") 
 
 client = Groq(api_key=GROQ_API_KEY)
 
